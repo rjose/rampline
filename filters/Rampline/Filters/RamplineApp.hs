@@ -55,18 +55,8 @@ data Params = Params { startDate :: Day,
 --
 
 --------------------------------------------------------------------------------
--- | Converts qplan input streams into result streams for qplan.
+-- | Converts rampline input streams into result streams for rampline.
 --
---      This groups work items by triage and staff by skill area for all tracks
---      present in the input streams. It computes cumulative demand for
---      resources by triage level. This also estimates when resources will be
---      exhausted assuming work items are staffed in the order they appear in
---      the streams -- this is used to estimate feasibilty of work.  This also
---      computes staff availability by skill group in each track and uses this
---      to estimate dev complete dates for each work item.
---
---      The final output is a set of stacked streams with this information
---      presented in a way that is easy for other programs to parse.
 --
 filterString :: String -> String
 filterString s = if any isNothing [workStream, staffStream, holidayStream, paramStream]
@@ -75,10 +65,10 @@ filterString s = if any isNothing [workStream, staffStream, holidayStream, param
         where
                 -- Unstack the input streams
                 streams = unstack $ lines s
-                workStream = find (("qplan work v1" ==) . header) streams
-                staffStream = find (("qplan staff v1" ==) . header) streams
-                holidayStream = find (("qplan holidays v1" ==) . header) streams
-                paramStream = find (("qplan params v1" ==) . header) streams
+                workStream = find (("rampline work v1" ==) . header) streams
+                staffStream = find (("rampline staff v1" ==) . header) streams
+                holidayStream = find (("rampline holidays v1" ==) . header) streams
+                paramStream = find (("rampline params v1" ==) . header) streams
 
                 -- Parse info out of streams
                 params = getParams $ fromJust paramStream
@@ -91,45 +81,23 @@ filterString s = if any isNothing [workStream, staffStream, holidayStream, param
                 tracks = getTracks staff workItems
                 skills = getSkills staff workItems
                 days = getDays (startDate params) (endDate params)
-                triages = map show [P1 .. P3]
 
                 -- Group work and staff into tracks
                 trackWork = workByTrack tracks workItems
                 trackStaff = staffByTrackSkills tracks skills staff
 
-                -- Compute resource demand and feasibility
+                -- Schedule work based on track assignments
                 workDays = getWorkdays days (fromJust holidayStream)
                 trackStaffAvail = getTrackStaffAvail workDays trackStaff
-                trackManpower = getManpower trackStaffAvail
-                trackDemand = getTrackDemand trackWork skills
-                trackFeasibility = getTrackFeasibility skills trackManpower trackWork
-
-                -- Schedule work based on track assignments
                 trackDates = estimateEndDates (schedSkills params)
                                               trackWork days trackStaffAvail
 
                 -- Generate result
-                trackStream = Stream "qplan tracks v1" tracks
-                skillStream = Stream "qplan skills v1" skills
-                triageStream = Stream "qplan triages v1" triages
-
-                manpowerStream = Stream "qplan track manpower v1"
-                        [l | mp <- trackManpower, let l = joinWith "\t" $ map show mp]
-
-                trackDemandStream = Stream "qplan track-triage demand v1" $
-                        stack (map getTriageStream trackDemand)
-
-                trackStaffStream = Stream "qplan track-skill staff v1" $
-                        stack (map getTrackGroupStream trackStaff)
-
-                trackWork' = zip3 trackWork trackFeasibility trackDates
-                trackWorkStream = Stream "qplan track work v1" $
+                trackWork' = zip trackWork trackDates
+                trackWorkStream = Stream "rampline track work v1" $
                         stack (map getWorkStream trackWork')
 
-                result = unlines $ stack [fromJust paramStream,
-                                          trackStream, skillStream, triageStream,
-                                          manpowerStream, trackDemandStream,
-                                          trackStaffStream, trackWorkStream]
+                result = unlines $ stack [fromJust paramStream, trackWorkStream]
 
 
 -- =============================================================================
@@ -197,38 +165,6 @@ staffByTrackSkills (all:tracks) skills staff = result
 -- Internal functions -- Supply and Demand
 --
 
---------------------------------------------------------------------------------
--- Computes manpower for track staff.
---
-getManpower :: TrackStaffAvail -> TrackManpower
-getManpower avail = [map (foldl (\a x -> a + (x/5.0)) 0) skillGroups |
-                     skillGroups <- avail]
-
-
---------------------------------------------------------------------------------
--- Computes manpower requirements for track work items.
---
---      Track work is divided into triage groups. The demand is reported as a
---      running total across the triage groups, from high to low priority.
---
---      The resulting manpower skill requirements will be returned in the same
---      order as the "skills" list. If a skill is not required for a work item,
---      0 will be returned as the skill requirement.
---
-getTrackDemand :: TrackWork -> [SkillName] -> TrackDemand
-getTrackDemand trackWork skills = result
-        where
-                result = [trackDemand | ws <- trackWork,
-                           let triagedWork = map (selectTriage ws) triages
-                               trackDemand' = map (map (getWorkManpower skills)) triagedWork
-                               trackDemand'' = map sumManpower trackDemand'
-                               trackDemand''' = map (conditionDemand len) trackDemand''
-                               trackDemand = accManpower trackDemand'''
-                         ]
-                selectTriage work tri = filter (\w -> tri == triage w) work
-                triages = [P1 .. P3]
-                len = length skills
-
 
 --------------------------------------------------------------------------------
 -- Maps an empty demand array into one with a specified number of zeroes.
@@ -259,26 +195,6 @@ sumManpower [] = []
 sumManpower (m:ms) = result
         where
                 result = foldl (\acc mp -> zipWith (+) acc mp) m ms
-
-
---------------------------------------------------------------------------------
--- Computes feasibility of track work.
---
---      This checks the net availability across all items in all tracks and
---      returns corresponding Bool values if any of the required skills for an
---      item have been exhausted.
---
-getTrackFeasibility :: [SkillName] -> TrackManpower -> TrackWork -> TrackFeasibility
-getTrackFeasibility skills manpower trackWork = result
-        where
-                netAvail mp ds = tail $ scanl (zipWith (-)) mp ds
-                isFeasibile as ds = and $
-                    zipWith (\a d -> if d > 0 && a < 0 then False else True) as ds
-                trackDemand = [map (getWorkManpower skills) ws| ws <- trackWork]
-                trackAvail = zipWith netAvail manpower trackDemand
-                result = zipWith (zipWith isFeasibile) trackAvail trackDemand
-
-
 
 -- =============================================================================
 -- Internal functions -- Work scheduling
@@ -338,16 +254,15 @@ getTrackStaffAvail workdays trackStaff = result
 --------------------------------------------------------------------------------
 -- Constructs stream of work data.
 --
-getWorkStream :: ([Work], [Bool], [Maybe Day]) -> Stream
-getWorkStream (ws, fs, ds) = result
+getWorkStream :: ([Work], [Maybe Day]) -> Stream
+getWorkStream (ws, ds) = result
         where
-                result = Stream "qplan track item" (zipWith3 format ws fs ds)
-                format w f d = joinWith "\t" [Work.track w,
+                result = Stream "rampline track item" (zipWith format ws ds)
+                format w d = joinWith "\t" [Work.track w,
                                               show $ rank w,
                                               show $ triage w,
                                               Work.name w,
                                               formatEstimate $ estimate w,
-                                              show f,
                                               formatDay d]
                 formatDay d = if isNothing d
                                 then "DNF"
@@ -363,7 +278,7 @@ getWorkStream (ws, fs, ds) = result
 getTrackGroupStream :: [[Person]] -> Stream
 getTrackGroupStream skillGroup = result
         where
-                result = Stream "qplan track item" $ stack (map getSkillStream skillGroup)
+                result = Stream "rampline track item" $ stack (map getSkillStream skillGroup)
 
 
 --------------------------------------------------------------------------------
@@ -376,18 +291,6 @@ getSkillStream :: [Person] -> Stream
 getSkillStream people = result
         where
                 result = Stream "qplan skill item" (map Person.name people)
-
---------------------------------------------------------------------------------
--- Constructs stream of triages.
---
---      Every list of items by triage corresponds to these triage items in the
---      same order.
---
-getTriageStream :: TrackManpower -> Stream
-getTriageStream manpower = result
-        where
-                result = Stream "qplan triage item"
-                        [l | mp <- manpower, let l = joinWith "\t" $ map show mp]
 
 
 --------------------------------------------------------------------------------
@@ -407,6 +310,6 @@ getParams (Stream _ ls) = Params startDate endDate schedSkills
 --
 
 test = do
-        content <- readFile "_q4plan.txt"
+        content <- readFile "rampline_cond.txt"
         let result = filterString content
         putStr result
