@@ -35,6 +35,9 @@ import Work
 --
 type SkillName = String
 type TrackName = String
+type ProductName = String
+type ThemeName = String
+
 type TrackWork =  [[Work]] -- List of tracks, each with a list of work
 type TrackStaff = [[[Person]]] -- List of tracks, each with a list of skill teams
 type TrackManpower = [[Float]] -- List of tracks, each with list of skills manpower
@@ -79,6 +82,8 @@ filterString s = if any isNothing [workStream, staffStream, holidayStream, param
                 --      Any list organized by track, skill, or time will
                 --      correspond directly to these lists.
                 tracks = getTracks staff workItems
+                products = getProducts workItems
+                themes = getThemes workItems
                 skills = getSkills staff workItems
                 days = getDays (startDate params) (endDate params)
 
@@ -91,18 +96,45 @@ filterString s = if any isNothing [workStream, staffStream, holidayStream, param
                 trackStaffAvail = getTrackStaffAvail workDays trackStaff
                 trackDates = estimateEndDates (schedSkills params)
                                               trackWork days trackStaffAvail
+                months = getMonths trackDates
 
                 -- Generate result
+                productStream = Stream "rampline products v1" products
+                themeStream = Stream "rampline themes v1" themes
+                monthStream = Stream "rampline months v1" months
                 trackWork' = zip trackWork trackDates
                 trackWorkStream = Stream "rampline track work v1" $
                         stack (map getWorkStream trackWork')
 
-                result = unlines $ stack [fromJust paramStream, trackWorkStream]
+                result = unlines $ stack [fromJust paramStream,
+                                          productStream, themeStream, monthStream
+                                         --       , trackWorkStream
+                                         ]
 
 
 -- =============================================================================
 -- Internal functions -- Grouping functions
 --
+
+getMonths :: [[Maybe Day]] -> [String]
+getMonths trackDates = result
+        where
+                uniqueDates = sort $ map fromJust $ filter isJust $ foldr union [] trackDates
+                months = map dayToString2 uniqueDates
+                result = map (!! 0) $ group months
+
+getProducts :: [Work] -> [ProductName]
+getProducts workItems = result
+        where
+               productSet = Set.fromList $ map Work.product workItems
+               result = sort $ Set.toList productSet
+
+
+getThemes :: [Work] -> [ThemeName]
+getThemes workItems = result
+        where
+               themeSet = Set.fromList $ map Work.theme workItems
+               result = sort $ Set.toList themeSet
 
 --------------------------------------------------------------------------------
 -- Takes union of tracks from a list of people and work items.

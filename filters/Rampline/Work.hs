@@ -63,7 +63,9 @@ data Work
                  track :: String,
                  team :: String,
                  value :: Value,
-                 prereqs :: [Id]
+                 prereqs :: [Id],
+                 product :: String,
+                 theme :: String
                }
         | WorkNone
                deriving (Show)
@@ -83,7 +85,7 @@ formatEstimate est = intercalate ", " $ map show est
 --      filter from other filters.
 --
 workFromString :: String -> Work
-workFromString s = Work id rank name estimate triage track team value prereqs
+workFromString s = Work id rank name estimate triage track team value prereqs product theme
         where
                 vals = splitOn "\t" s
                 id = vals !! 0
@@ -95,6 +97,9 @@ workFromString s = Work id rank name estimate triage track team value prereqs
                 team = vals !! 6
                 value_str = vals !! 7
                 prereqs = splitOn "," $ vals !! 8
+                product = vals !! 9
+                theme = vals !! 10
+
                 value = if value_str == "" then 0 else read value_str
                 estimate = fromVectorString estimate_str
                 triage = parseTriage triage_str
