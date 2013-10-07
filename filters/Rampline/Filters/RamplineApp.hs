@@ -29,6 +29,8 @@ import Person
 import SkillAmount
 import StackStream
 import Work
+import RamplineItem
+
 
 -- =============================================================================
 -- Data types
@@ -82,8 +84,6 @@ filterString s = if any isNothing [workStream, staffStream, holidayStream, param
                 --      Any list organized by track, skill, or time will
                 --      correspond directly to these lists.
                 tracks = getTracks staff workItems
-                products = getProducts workItems
-                themes = getThemes workItems
                 skills = getSkills staff workItems
                 days = getDays (startDate params) (endDate params)
 
@@ -94,27 +94,67 @@ filterString s = if any isNothing [workStream, staffStream, holidayStream, param
                 -- Schedule work based on track assignments
                 workDays = getWorkdays days (fromJust holidayStream)
                 trackStaffAvail = getTrackStaffAvail workDays trackStaff
-                trackDates = estimateEndDates (schedSkills params)
+                trackDates = estimateEndDates skills (schedSkills params)
                                               trackWork days trackStaffAvail
                 months = getMonths trackDates
+                -- TODO: At some point, we'll have sets of rampline items
+                ramplineItems = getRamplineItems (tail trackWork) (tail trackDates)
+                products = map (\rl -> RamplineItem.product $ (rl !! 0)) ramplineItems
+                themes = getThemes workItems
 
                 -- Generate result
                 productStream = Stream "rampline products v1" products
                 themeStream = Stream "rampline themes v1" themes
                 monthStream = Stream "rampline months v1" months
+                ramplineStream = Stream "ramplines v1" ["Dev Complete\tdev-complete"]
+                ramplineItemListStream = getRamplineItemListStream [ramplineItems]
+
                 trackWork' = zip trackWork trackDates
                 trackWorkStream = Stream "rampline track work v1" $
                         stack (map getWorkStream trackWork')
 
                 result = unlines $ stack [fromJust paramStream,
-                                          productStream, themeStream, monthStream
-                                         --       , trackWorkStream
+                                          productStream, themeStream, monthStream,
+                                          ramplineStream, ramplineItemListStream
                                          ]
 
 
 -- =============================================================================
 -- Internal functions -- Grouping functions
 --
+
+-- TODO: See if I can implement this in a cleaner way
+getRamplineItemListStream :: [[[RamplineItem]]] -> Stream
+getRamplineItemListStream itemsList = result
+        where
+                result = Stream "rampline items v1" $ stack (map getRamplineItemStream itemsList)
+
+getRamplineItemStream :: [[RamplineItem]] -> Stream
+getRamplineItemStream itemsList = result
+        where
+                result = Stream "rampline" lines
+                items = sortBy (\l r -> compare (RamplineItem.devDate l) (RamplineItem.devDate r)) $
+                               filter (isJust . RamplineItem.devDate) $ concat itemsList
+                lines = map (\r -> joinWith "\t" [RamplineItem.product r,
+                                                  dayToString2 $ fromJust $ RamplineItem.devDate r,
+                                                  RamplineItem.theme r,
+                                                  RamplineItem.name r,
+                                                  RamplineItem.track r,
+                                                  dayToString3 $ fromJust $ RamplineItem.devDate r]) items
+
+
+--------------------------------------------------------------------------------
+-- Returns RamplineItems grouped and sorted by product
+--
+getRamplineItems :: TrackWork ->  [[Maybe Day]] -> [[RamplineItem]]
+getRamplineItems trackWork trackDates = result
+        where
+                items = concat $ zipWith (zipWith makeItem) trackWork trackDates
+                makeItem w d = RamplineItem (Work.id w) (Work.team w) (Work.product w)
+                                            (Work.theme w) (Work.track w) (Work.name w) d
+                result' = sortBy (\l r -> (RamplineItem.product l) `compare`
+                                         (RamplineItem.product r)) items
+                result = groupBy (\l r -> (RamplineItem.product l) == (RamplineItem.product r)) result'
 
 getMonths :: [[Maybe Day]] -> [String]
 getMonths trackDates = result
@@ -123,11 +163,6 @@ getMonths trackDates = result
                 months = map dayToString2 uniqueDates
                 result = map (!! 0) $ group months
 
-getProducts :: [Work] -> [ProductName]
-getProducts workItems = result
-        where
-               productSet = Set.fromList $ map Work.product workItems
-               result = sort $ Set.toList productSet
 
 
 getThemes :: [Work] -> [ThemeName]
@@ -256,13 +291,18 @@ getWorkdays days holidayStream = map (isWorkDay holidays) days
 --      work items against skill sets. This defines skills that are required for
 --      development *not* QA or any other skill type.
 --
-estimateEndDates :: [SkillName] -> TrackWork -> [Day] -> [SkillAvailabilities] ->
+estimateEndDates :: [SkillName] -> [SkillName] -> TrackWork -> [Day] -> [SkillAvailabilities] ->
                      [[Maybe Day]]
-estimateEndDates skills trackWork days trackStaffAvail = result
+estimateEndDates allSkills skills trackWork days trackStaffAvail = result
         where
-                schedAvails = map (\avail -> (days, avail)) trackStaffAvail
-                result = zipWith (schedule skills) trackWork schedAvails
+                schedAvails = map (\avail -> (days, avail)) trackStaffAvail'
+                -- Need to filter for specified skills
+                trackStaffAvail' = [skillGroups' | skillGroups <- trackStaffAvail,
+                                       let
+                                       skillGroups' = map (\i -> skillGroups !! i) skillIndexes]
+                skillIndexes = map fromJust $ filter isJust $ map (\s -> elemIndex s allSkills) skills
 
+                result = zipWith (schedule skills) trackWork schedAvails
 
 --------------------------------------------------------------------------------
 -- Sums availability of staff for each track and skill group.

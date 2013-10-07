@@ -36,6 +36,9 @@ dayToString d = formatTime defaultTimeLocale dateFormat d
 dayToString2 :: Day -> String
 dayToString2 d = formatTime defaultTimeLocale "%b %Y" d
 
+dayToString3 :: Day -> String
+dayToString3 d = formatTime defaultTimeLocale "%b %e" d
+
 --------------------------------------------------------------------------------
 -- Converts string to day.
 --
